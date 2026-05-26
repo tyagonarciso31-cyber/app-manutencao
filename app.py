@@ -1,4 +1,4 @@
-import streamlit as st
+/import streamlit as st
 import pandas as pd
 import re
 import asyncio
@@ -15,7 +15,7 @@ GEMINI_API = st.secrets["GEMINI_API"]
 OPENROUTER_API = st.secrets["OPENROUTER_API"]
 
 # CLIENTES
-client_gemini = genai.Client(api_key=GEMINI_API)
+client_gemini = genai.configure(api_key=GEMINI_API)
 
 client_or = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -67,12 +67,13 @@ async def chamar_openrouter(prompt):
 async def chamar_gemini(prompt, imagem=None):
     try:
         if imagem:
-            res = client_gemini.models.generate_content(
+            res = genai.GenerativeModel("gemini-1.5-flash").generate_content(
                 model="models/gemini-1.5-flash",
                 contents=[prompt, imagem]
             )
         else:
-            res = client_gemini.models.generate_content(
+            res = genai.GenerativeModel("gemini-1.5-flash").generate_content(
+
                 model="models/gemini-1.5-flash",
                 contents=prompt
             )
