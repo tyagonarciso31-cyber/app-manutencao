@@ -5,7 +5,8 @@ import asyncio
 from PIL import Image
 from openpyxl import Workbook
 from openai import AsyncOpenAI
-from google import genai
+import google.generativeai as genai
+
 
 # =========================
 # CONFIG API KEYS
