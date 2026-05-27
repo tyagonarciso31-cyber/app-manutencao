@@ -1,21 +1,26 @@
 import streamlit as st
 import pandas as pd
-import re
 import asyncio
-from PIL import Image
-from openpyxl import Workbook
-from openai import AsyncOpenAI
+import re
+from io import BytesIO
+from datetime import datetime
+
 import google.generativeai as genai
-
+from openai import AsyncOpenAI
 
 # =========================
-# CONFIG API KEYS
+# CONFIG
 # =========================
+st.set_page_config(page_title="Sistema IA Manutenção", layout="wide")
+
+FICHEIRO_HIST = "historico.csv"
+
+# API KEYS
 GEMINI_API = st.secrets["GEMINI_API"]
 OPENROUTER_API = st.secrets["OPENROUTER_API"]
 
-# CLIENTES
-client_gemini = genai.configure(api_key=GEMINI_API)
+# INIT APIs
+genai.configure(api_key=GEMINI_API)
 
 client_or = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -32,70 +37,87 @@ def buscar_valor(campo, texto):
 
 
 def extrair_confianca(texto):
-    valor = buscar_valor("CONFIANÇA", texto)
+    if not texto:
+        return 0
     try:
-        return int(re.sub(r"\D", "", valor))
+        return int(re.sub(r"\D", "", buscar_valor("CONFIANÇA", texto)))
     except:
         return 0
 
 
-def escolher_melhor(respostas):
-    validas = {r: extrair_confianca(r) for r in respostas if r}
-    if not validas:
-        return None, 0
+def criar_excel(texto, confianca):
+    from openpyxl import Workbook
 
-    melhor = max(validas, key=validas.get)
-    return melhor, validas[melhor]
+    wb = Workbook()
+    ws = wb.active
 
+    ws['A1'] = "RELATÓRIO AUTOMÁTICO"
+    ws['A3'] = buscar_valor("ID", texto)
+    ws['A4'] = buscar_valor("DATA", texto)
+    ws['A5'] = buscar_valor("RESPONSÁVEL", texto)
+    ws['A6'] = buscar_valor("EQUIPAMENTO", texto)
+    ws['A7'] = buscar_valor("MODELO", texto)
+    ws['A9'] = buscar_valor("DIAGNÓSTICO", texto)
+    ws['A12'] = buscar_valor("SOLUÇÃO", texto)
+    ws['A15'] = buscar_valor("GRAVIDADE", texto)
+    ws['A16'] = f"{confianca}%"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def guardar_historico(dados):
+    try:
+        df = pd.read_csv(FICHEIRO_HIST)
+    except:
+        df = pd.DataFrame()
+
+    df = pd.concat([df, pd.DataFrame([dados])])
+    df.to_csv(FICHEIRO_HIST, index=False)
+
+
+def carregar_historico():
+    try:
+        return pd.read_csv(FICHEIRO_HIST)
+    except:
+        return pd.DataFrame()
 
 # =========================
-# CHAMADAS À IA
+# IA
 # =========================
 
 async def chamar_openrouter(prompt):
     try:
-        response = await client_or.chat.completions.create(
+        res = await client_or.chat.completions.create(
             model="openrouter/free",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600,
         )
-        return response.choices[0].message.content
+        return res.choices[0].message.content
     except:
         return None
 
 
-async def chamar_gemini(prompt, imagem=None):
+async def chamar_gemini(prompt):
     try:
-        if imagem:
-            res = genai.GenerativeModel("gemini-1.5-flash").generate_content(
-                model="models/gemini-1.5-flash",
-                contents=[prompt, imagem]
-            )
-        else:
-            res = genai.GenerativeModel("gemini-1.5-flash").generate_content(
-
-                model="models/gemini-1.5-flash",
-                contents=prompt
-            )
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        res = model.generate_content(prompt)
         return res.text
     except:
         return None
 
 
-# =========================
-# ANÁLISE PRINCIPAL
-# =========================
-
-async def analisar_com_ia(conteudo, imagem=None):
-
+async def analisar(conteudo):
     prompt = f"""
-Tu és um Engenheiro de Manutenção Especialista.
+Tu és um Engenheiro de Manutenção.
 
 Analisa o relatório:
 
 {conteudo}
 
-Responde apenas neste formato:
+Responde EXCLUSIVAMENTE neste formato:
 
 --------------------------------------------------
 ID:
@@ -110,130 +132,133 @@ CONFIANÇA:
 --------------------------------------------------
 """
 
-    tarefa1 = chamar_gemini(prompt, imagem)
+    tarefa1 = chamar_gemini(prompt)
     tarefa2 = chamar_openrouter(prompt)
     tarefa3 = chamar_openrouter(prompt)
 
     r1, r2, r3 = await asyncio.gather(tarefa1, tarefa2, tarefa3)
 
-    melhor, conf = escolher_melhor([r1, r2, r3])
+    respostas = [r1, r2, r3]
 
-    return melhor, conf, r1, r2, r3
+    melhor = None
+    melhor_conf = 0
 
+    for r in respostas:
+        conf = extrair_confianca(r)
+        if conf > melhor_conf:
+            melhor = r
+            melhor_conf = conf
 
-# =========================
-# EXCEL
-# =========================
-
-def criar_excel(texto, confianca):
-    wb = Workbook()
-    ws = wb.active
-
-    ws['A1'] = "RELATÓRIO AUTOMÁTICO"
-
-    ws['A3'] = "ID"
-    ws['B3'] = buscar_valor("ID", texto)
-
-    ws['A4'] = "DATA"
-    ws['B4'] = buscar_valor("DATA", texto)
-
-    ws['A5'] = "RESPONSÁVEL"
-    ws['B5'] = buscar_valor("RESPONSÁVEL", texto)
-
-    ws['A6'] = "EQUIPAMENTO"
-    ws['B6'] = buscar_valor("EQUIPAMENTO", texto)
-
-    ws['A7'] = "MODELO"
-    ws['B7'] = buscar_valor("MODELO", texto)
-
-    ws['A9'] = "DIAGNÓSTICO"
-    ws['B9'] = buscar_valor("DIAGNÓSTICO", texto)
-
-    ws['A12'] = "SOLUÇÃO"
-    ws['B12'] = buscar_valor("SOLUÇÃO", texto)
-
-    ws['A15'] = "GRAVIDADE"
-    ws['B15'] = buscar_valor("GRAVIDADE", texto)
-
-    ws['A16'] = "CONFIANÇA"
-    ws['B16'] = f"{confianca}%"
-
-    file_path = "resultado.xlsx"
-    wb.save(file_path)
-
-    return file_path
+    return melhor, melhor_conf, r1, r2, r3
 
 
 # =========================
-# INTERFACE
+# UI
 # =========================
 
-st.set_page_config(page_title="IA Manutenção", layout="centered")
+st.title("🏭 Sistema Inteligente de Manutenção")
 
-st.title("🤖 Sistema Inteligente de Avarias (IA Real)")
+menu = st.sidebar.selectbox("Menu", [
+    "📤 Processar Relatórios",
+    "📊 Dashboard",
+    "📁 Histórico"
+])
 
-ficheiro = st.file_uploader(
-    "Carregar relatório",
-    type=["xlsx", "xls", "png", "jpg", "jpeg", "docx"]
-)
+# =========================
+# PROCESSAR
+# =========================
 
-if ficheiro:
-    st.success("Ficheiro carregado ✅")
+if menu == "📤 Processar Relatórios":
 
-if st.button("🔍 Analisar com IA"):
-    if not ficheiro:
-        st.warning("Carrega primeiro um ficheiro")
-    else:
-        with st.spinner("A analisar com múltiplas IAs..."):
+    ficheiros = st.file_uploader(
+        "Carregar relatórios",
+        accept_multiple_files=True
+    )
 
-            conteudo = ""
-            imagem = None
+    if ficheiros:
+        for ficheiro in ficheiros:
 
-            # Excel
-            if ficheiro.name.endswith((".xlsx", ".xls")):
-                df = pd.read_excel(ficheiro)
-                conteudo = df.to_string()
+            st.subheader(f"📄 {ficheiro.name}")
 
-            # Imagem
-            elif ficheiro.name.endswith((".png", ".jpg", ".jpeg")):
-                imagem = Image.open(ficheiro)
-                st.image(imagem)
-                conteudo = "Relatório em imagem"
+            conteudo = ficheiro.read().decode("utf-8", errors="ignore")
 
-            # Word
-            elif ficheiro.name.endswith(".docx"):
-                import docx
-                doc = docx.Document(ficheiro)
-                conteudo = "\n".join([p.text for p in doc.paragraphs])
+            with st.spinner("A analisar com IA..."):
+                resultado, conf, r1, r2, r3 = asyncio.run(analisar(conteudo))
 
-            # EXECUTA IA
-            resultado, conf, r1, r2, r3 = asyncio.run(
-                analisar_com_ia(conteudo, imagem)
-            )
-
-            # RESULTADOS
-            st.subheader("📊 Melhor Resultado")
-            st.code(resultado if resultado else "Sem resposta")
-
-            st.write(f"✅ Confiança escolhida: **{conf}%**")
-
-            with st.expander("Ver respostas das IAs"):
-                st.write("Gemini:")
-                st.code(r1)
-
-                st.write("OpenRouter A:")
-                st.code(r2)
-
-                st.write("OpenRouter B:")
-                st.code(r3)
-
-            # Excel
             if resultado:
-                path = criar_excel(resultado, conf)
+                st.code(resultado)
+                st.success(f"Confiança: {conf}%")
 
-                with open(path, "rb") as f:
-                    st.download_button(
-                        "⬇️ Download Excel",
-                        f,
-                        file_name="relatorio_final.xlsx"
-                    )
+                with st.expander("Ver respostas das IAs"):
+                    st.code(r1)
+                    st.code(r2)
+                    st.code(r3)
+
+                # Guardar histórico
+                guardar_historico({
+                    "ficheiro": ficheiro.name,
+                    "data": datetime.now(),
+                    "equipamento": buscar_valor("EQUIPAMENTO", resultado),
+                    "gravidade": buscar_valor("GRAVIDADE", resultado),
+                    "confianca": conf
+                })
+
+                # Excel
+                excel = criar_excel(resultado, conf)
+
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=excel,
+                    file_name=f"{ficheiro.name}_relatorio.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            else:
+                st.error("Erro na análise")
+
+# =========================
+# DASHBOARD
+# =========================
+
+elif menu == "📊 Dashboard":
+
+    df = carregar_historico()
+
+    if df.empty:
+        st.warning("Sem dados")
+    else:
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Total relatórios", len(df))
+        col2.metric("Equipamentos únicos", df["equipamento"].nunique())
+
+        criticos = len(df[df["gravidade"] == "Crítica"])
+        col3.metric("Críticos", criticos)
+
+        st.subheader("Gravidade")
+        st.bar_chart(df["gravidade"].value_counts())
+
+        st.subheader("Equipamentos")
+        st.bar_chart(df["equipamento"].value_counts())
+
+# =========================
+# HISTÓRICO
+# =========================
+
+elif menu == "📁 Histórico":
+
+    df = carregar_historico()
+
+    if df.empty:
+        st.warning("Sem histórico")
+    else:
+
+        filtro = st.selectbox(
+            "Filtrar equipamento",
+            ["Todos"] + list(df["equipamento"].unique())
+        )
+
+        if filtro != "Todos":
+            df = df[df["equipamento"] == filtro]
+
+        st.dataframe(df)
